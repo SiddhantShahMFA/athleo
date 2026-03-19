@@ -1,0 +1,9 @@
+runs
+*.mp4
+*.pt
+venv
+__pycache__
+*.llc
+*.png
+.DS_Store
+*.json

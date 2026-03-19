@@ -19,6 +19,18 @@ DEFAULT_FPS = 30.0
 LEFT_ARROW_KEYS = {81, 2424832, 65361}
 RIGHT_ARROW_KEYS = {83, 2555904, 65363}
 SPACE_KEYS = {32}
+ESC_KEYS = {27}
+MODE_ALL = "all"
+MODE_SINGLE = "single_box"
+MODE_SPOTLIGHT = "spotlight"
+MODE_PAIR = "pair_link"
+SPOTLIGHT_COLOR = (255, 255, 0)
+PAIR_LINK_COLOR = (30, 30, 210)
+PAIR_SELECTED_BOX_COLOR = (0, 235, 255)
+PAIR_RING_COLOR = (40, 40, 220)
+PAIR_RING_ACCENT_COLOR = (90, 120, 255)
+PAIR_RING_HIGHLIGHT_COLOR = (210, 235, 255)
+PAIR_RING_SHADOW_COLOR = (20, 20, 120)
 
 
 @dataclass(frozen=True)
@@ -114,6 +126,14 @@ def resolve_config(args: argparse.Namespace) -> AppConfig:
 
 def selected_output_path_for(video_path: Path, track_id: int) -> Path:
     return video_path.with_name(f"annotated_selected_{track_id}.mp4")
+
+
+def spotlight_output_path_for(video_path: Path, track_id: int) -> Path:
+    return video_path.with_name(f"annotated_spotlight_{track_id}.mp4")
+
+
+def pair_output_path_for(video_path: Path, track_ids: list[int]) -> Path:
+    return video_path.with_name(f"annotated_pair_{track_ids[0]}_{track_ids[1]}.mp4")
 
 
 def load_video_info(video_path: Path) -> dict[str, Any]:
@@ -502,46 +522,206 @@ def clip_box_to_frame(
     return x1, y1, x2, y2
 
 
-def draw_tracks_on_frame(
+def find_track_by_id(tracks: list[dict[str, Any]], track_id: int) -> dict[str, Any] | None:
+    for track in tracks:
+        if int(track["track_id"]) == track_id:
+            return track
+    return None
+
+
+def draw_track_box(
+    annotated: np.ndarray,
+    track: dict[str, Any],
+    color: tuple[int, int, int],
+    thickness: int,
+) -> None:
+    x1, y1, x2, y2 = clip_box_to_frame(annotated.shape, track)
+    if x2 <= x1 or y2 <= y1:
+        return
+
+    label = f"ID {int(track['track_id'])}"
+    if bool(track.get("is_lost_buffer")):
+        label += " (hold)"
+
+    cv2.rectangle(annotated, (x1, y1), (x2, y2), color, thickness)
+    text_origin = (x1, max(25, y1 - 10))
+    cv2.putText(
+        annotated,
+        label,
+        text_origin,
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.65,
+        color,
+        2,
+        cv2.LINE_AA,
+    )
+
+
+def draw_spotlight_overlay(
     frame: np.ndarray,
-    tracks: list[dict[str, Any]],
-    selected_track_id: int | None = None,
-    show_all_tracks: bool = True,
-    dim_unselected: bool = False,
+    track: dict[str, Any],
 ) -> np.ndarray:
     annotated = frame.copy()
+    x1, _y1, x2, y2 = clip_box_to_frame(annotated.shape, track)
+    if x2 <= x1:
+        return annotated
 
+    center_x = int(round((x1 + x2) / 2))
+    overlay = annotated.copy()
+    beam_points = np.array(
+        [
+            [center_x, 0],
+            [x1, y2],
+            [x2, y2],
+        ],
+        dtype=np.int32,
+    )
+    cv2.fillConvexPoly(overlay, beam_points, SPOTLIGHT_COLOR)
+    cv2.addWeighted(overlay, 0.28, annotated, 0.72, 0.0, annotated)
+    cv2.polylines(annotated, [beam_points], True, SPOTLIGHT_COLOR, 2, cv2.LINE_AA)
+    return annotated
+
+
+def bottom_center_for_track(
+    frame_shape: tuple[int, int, int],
+    track: dict[str, Any],
+) -> tuple[int, int]:
+    x1, _y1, x2, y2 = clip_box_to_frame(frame_shape, track)
+    return int(round((x1 + x2) / 2)), y2
+
+
+def pair_ring_geometry(
+    frame_shape: tuple[int, int, int],
+    track: dict[str, Any],
+) -> tuple[tuple[int, int], tuple[int, int]]:
+    height, _width = frame_shape[:2]
+    x1, y1, x2, y2 = clip_box_to_frame(frame_shape, track)
+    if x2 <= x1:
+        return (0, 0), (0, 0)
+
+    box_width = max(1, x2 - x1)
+    box_height = max(1, y2 - y1)
+    axes_x = max(18, int(round(box_width * 0.95)))
+    axes_y = max(6, int(round(box_height * 0.08)))
+    center_x = int(round((x1 + x2) / 2))
+    center_y = min(height - axes_y - 1, y2 + max(4, axes_y // 2))
+    return (center_x, center_y), (axes_x, axes_y)
+
+
+def draw_pair_link(
+    annotated: np.ndarray,
+    first_track: dict[str, Any],
+    second_track: dict[str, Any],
+) -> None:
+    first_point, first_axes = pair_ring_geometry(annotated.shape, first_track)
+    second_point, second_axes = pair_ring_geometry(annotated.shape, second_track)
+    if first_axes == (0, 0) or second_axes == (0, 0):
+        return
+    cv2.line(annotated, first_point, second_point, PAIR_LINK_COLOR, 5, cv2.LINE_AA)
+
+
+def draw_pair_ground_ring(
+    annotated: np.ndarray,
+    track: dict[str, Any],
+) -> None:
+    center, axes = pair_ring_geometry(annotated.shape, track)
+    if axes == (0, 0):
+        return
+
+    shadow_center = (center[0], min(annotated.shape[0] - 1, center[1] + 2))
+    inner_axes = (max(axes[0] - 6, 8), max(axes[1] - 2, 4))
+    highlight_axes = (max(axes[0] - 9, 6), max(axes[1] - 3, 3))
+
+    cv2.ellipse(
+        annotated,
+        shadow_center,
+        axes,
+        0,
+        0,
+        360,
+        PAIR_RING_SHADOW_COLOR,
+        9,
+        cv2.LINE_AA,
+    )
+    cv2.ellipse(
+        annotated,
+        center,
+        axes,
+        0,
+        0,
+        360,
+        PAIR_RING_COLOR,
+        7,
+        cv2.LINE_AA,
+    )
+    cv2.ellipse(
+        annotated,
+        center,
+        inner_axes,
+        0,
+        0,
+        360,
+        PAIR_RING_ACCENT_COLOR,
+        3,
+        cv2.LINE_AA,
+    )
+    cv2.ellipse(
+        annotated,
+        (center[0], max(0, center[1] - 1)),
+        highlight_axes,
+        0,
+        200,
+        340,
+        PAIR_RING_HIGHLIGHT_COLOR,
+        2,
+        cv2.LINE_AA,
+    )
+
+
+def render_overlay(
+    frame: np.ndarray,
+    tracks: list[dict[str, Any]],
+    mode: str,
+    selected_track_id: int | None = None,
+    pair_track_ids: list[int] | None = None,
+) -> np.ndarray:
+    annotated = frame.copy()
+    pair_track_ids = list(pair_track_ids or [])
+
+    if mode == MODE_SPOTLIGHT and selected_track_id is not None:
+        selected_track = find_track_by_id(tracks, selected_track_id)
+        if selected_track is not None:
+            return draw_spotlight_overlay(annotated, selected_track)
+        return annotated
+
+    highlighted_pair_ids = set(pair_track_ids)
     for track in tracks:
         track_id = int(track["track_id"])
-        is_selected = selected_track_id is not None and track_id == selected_track_id
-        if not show_all_tracks and selected_track_id is not None and not is_selected:
-            continue
-
-        x1, y1, x2, y2 = clip_box_to_frame(annotated.shape, track)
-        if x2 <= x1 or y2 <= y1:
+        if mode == MODE_SINGLE and selected_track_id is not None and track_id != selected_track_id:
             continue
 
         color = color_for_track(track_id)
-        if dim_unselected and selected_track_id is not None and not is_selected:
-            color = tuple(int(channel * 0.45) for channel in color)
+        thickness = 2
+        if mode == MODE_SINGLE and selected_track_id is not None and track_id == selected_track_id:
+            thickness = 4
+        elif mode == MODE_PAIR and track_id in highlighted_pair_ids:
+            thickness = 4
+            color = PAIR_SELECTED_BOX_COLOR
 
-        thickness = 4 if is_selected else 2
-        label = f"ID {track_id}"
-        if bool(track.get("is_lost_buffer")):
-            label += " (hold)"
-
-        cv2.rectangle(annotated, (x1, y1), (x2, y2), color, thickness)
-        text_origin = (x1, max(25, y1 - 10))
-        cv2.putText(
+        draw_track_box(
             annotated,
-            label,
-            text_origin,
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.65,
+            track,
             color,
-            2,
-            cv2.LINE_AA,
+            thickness,
         )
+
+    if mode == MODE_PAIR and len(pair_track_ids) == 2:
+        first_track = find_track_by_id(tracks, pair_track_ids[0])
+        second_track = find_track_by_id(tracks, pair_track_ids[1])
+        if first_track is not None and second_track is not None:
+            draw_pair_link(annotated, first_track, second_track)
+            draw_pair_ground_ring(annotated, first_track)
+            draw_pair_ground_ring(annotated, second_track)
 
     return annotated
 
@@ -595,8 +775,9 @@ def export_video(
     video_info: dict[str, Any],
     frames_index: dict[int, list[dict[str, Any]]],
     output_path: Path,
+    mode: str,
     selected_track_id: int | None = None,
-    show_all_tracks: bool = True,
+    pair_track_ids: list[int] | None = None,
 ) -> bool:
     capture = cv2.VideoCapture(str(video_path))
     if not capture.isOpened():
@@ -613,7 +794,6 @@ def export_video(
         return False
 
     total_frames = int(video_info["total_frames"])
-    drawn_boxes = 0
     frame_idx = 0
     started_at = time.time()
 
@@ -624,18 +804,13 @@ def export_video(
                 break
 
             frame_tracks = frames_index.get(frame_idx, [])
-            annotated = draw_tracks_on_frame(
+            annotated = render_overlay(
                 frame,
                 frame_tracks,
+                mode=mode,
                 selected_track_id=selected_track_id,
-                show_all_tracks=show_all_tracks,
+                pair_track_ids=pair_track_ids,
             )
-            if show_all_tracks or selected_track_id is None:
-                drawn_boxes += len(frame_tracks)
-            else:
-                drawn_boxes += sum(
-                    1 for track in frame_tracks if int(track["track_id"]) == selected_track_id
-                )
 
             writer.write(annotated)
 
@@ -654,11 +829,6 @@ def export_video(
         capture.release()
         writer.release()
 
-    if drawn_boxes == 0:
-        print(f"No boxes were drawn into {output_path.name}. The video was still written.")
-    else:
-        print(f"Drew {drawn_boxes} boxes into {output_path.name}.")
-
     print(f"Saved output video to {output_path}")
     return True
 
@@ -668,18 +838,36 @@ def overlay_player_status(
     frame_idx: int,
     frame_count: int,
     paused: bool,
+    mode: str,
     selected_track_id: int | None,
-    show_all_tracks: bool,
+    pair_track_ids: list[int],
 ) -> np.ndarray:
     annotated = frame.copy()
-    mode_label = "All players" if show_all_tracks or selected_track_id is None else f"Track {selected_track_id}"
+    if mode == MODE_SINGLE and selected_track_id is not None:
+        mode_label = f"Track {selected_track_id}"
+    elif mode == MODE_SPOTLIGHT:
+        mode_label = (
+            f"Spotlight track {selected_track_id}"
+            if selected_track_id is not None
+            else "Spotlight mode (click a player)"
+        )
+    elif mode == MODE_PAIR:
+        if len(pair_track_ids) == 2:
+            mode_label = f"Pair link {pair_track_ids[0]} -> {pair_track_ids[1]}"
+        elif len(pair_track_ids) == 1:
+            mode_label = f"Pair link ({pair_track_ids[0]} selected, pick one more)"
+        else:
+            mode_label = "Pair link mode (pick two players)"
+    else:
+        mode_label = "All players"
+
     play_state = "Paused" if paused else "Playing"
     lines = [
         f"{play_state} | Frame {frame_idx + 1}/{frame_count}",
         f"Mode: {mode_label}",
         "Space pause/resume | Left/Right step when paused",
-        "Left click select | Right click clear | A all | C clear",
-        "J jump | E export current mode | Q quit",
+        "Left click select | Right click/C clear | A all | Esc exit special mode",
+        "S spotlight | P pair link | J jump | E export current mode | Q quit",
     ]
 
     y = 28
@@ -712,8 +900,9 @@ class InteractivePlayer:
         self.capture: cv2.VideoCapture | None = None
         self.current_frame_idx = 0
         self.paused = False
+        self.mode = MODE_ALL
         self.selected_track_id: int | None = None
-        self.show_all_tracks = True
+        self.pair_track_ids: list[int] = []
         self.current_frame: np.ndarray | None = None
         self.current_tracks: list[dict[str, Any]] = []
         self.frame_duration = 1.0 / max(float(video_info["fps"]), 0.001)
@@ -727,19 +916,21 @@ class InteractivePlayer:
                     print("No video frame is available for playback.")
                     return 1
 
-                display_frame = draw_tracks_on_frame(
+                display_frame = render_overlay(
                     self.current_frame,
                     self.current_tracks,
+                    mode=self.mode,
                     selected_track_id=self.selected_track_id,
-                    show_all_tracks=self.show_all_tracks,
+                    pair_track_ids=self.pair_track_ids,
                 )
                 display_frame = overlay_player_status(
                     display_frame,
                     self.current_frame_idx,
                     int(self.video_info["total_frames"]),
                     self.paused,
+                    self.mode,
                     self.selected_track_id,
-                    self.show_all_tracks,
+                    self.pair_track_ids,
                 )
                 cv2.imshow(WINDOW_NAME, display_frame)
 
@@ -789,7 +980,10 @@ class InteractivePlayer:
         # The player keeps reading the original frames while the selected track ID changes instantly.
         self.next_frame_deadline = time.perf_counter() + self.frame_duration
         print("Interactive playback started.")
-        print("Controls: Space pause/resume, left click select, right click clear, E export, Q quit")
+        print(
+            "Controls: Space pause/resume, left click select, right click/C clear, "
+            "A all, S spotlight, P pair link, Esc exit special mode, E export, Q quit"
+        )
 
     def close(self) -> None:
         if self.capture is not None:
@@ -802,25 +996,83 @@ class InteractivePlayer:
 
     def on_mouse(self, event: int, x: int, y: int, _flags: int, _userdata: Any) -> None:
         if event == cv2.EVENT_LBUTTONDOWN:
-            selected_track_id = pick_track_from_click(x, y, self.current_tracks)
-            if selected_track_id is None:
+            picked_track_id = pick_track_from_click(x, y, self.current_tracks)
+            if picked_track_id is None:
                 print("Click landed outside all tracked player boxes.")
                 return
 
-            self.selected_track_id = selected_track_id
-            self.show_all_tracks = False
-            print(f"Selected track ID: {selected_track_id}")
+            if self.mode == MODE_SPOTLIGHT:
+                self.selected_track_id = picked_track_id
+                print(f"Spotlight track ID: {picked_track_id}")
+                return
+
+            if self.mode == MODE_PAIR:
+                self.update_pair_selection(picked_track_id)
+                return
+
+            self.mode = MODE_SINGLE
+            self.selected_track_id = picked_track_id
+            self.pair_track_ids = []
+            print(f"Selected track ID: {picked_track_id}")
             return
 
         if event == cv2.EVENT_RBUTTONDOWN:
-            self.clear_selection()
+            self.clear_current_selection()
 
-    def clear_selection(self) -> None:
-        if self.selected_track_id is None and self.show_all_tracks:
+    def reset_to_all_mode(self) -> None:
+        if (
+            self.mode == MODE_ALL
+            and self.selected_track_id is None
+            and not self.pair_track_ids
+        ):
             return
+        self.mode = MODE_ALL
         self.selected_track_id = None
-        self.show_all_tracks = True
+        self.pair_track_ids = []
         print("Selection cleared. Showing all tracked players.")
+
+    def activate_special_mode(self, mode: str) -> None:
+        self.mode = mode
+        self.selected_track_id = None
+        self.pair_track_ids = []
+        if mode == MODE_SPOTLIGHT:
+            print("Spotlight mode active. Left click a player to draw the sky spotlight.")
+        elif mode == MODE_PAIR:
+            print("Pair-link mode active. Left click two players to connect them.")
+
+    def clear_current_selection(self) -> None:
+        if self.mode == MODE_SPOTLIGHT:
+            if self.selected_track_id is None:
+                return
+            self.selected_track_id = None
+            print("Spotlight selection cleared. Spotlight mode is still active.")
+            return
+
+        if self.mode == MODE_PAIR:
+            if not self.pair_track_ids:
+                return
+            self.pair_track_ids = []
+            print("Pair selection cleared. Pair-link mode is still active.")
+            return
+
+        self.reset_to_all_mode()
+
+    def update_pair_selection(self, track_id: int) -> None:
+        if track_id in self.pair_track_ids:
+            print(f"Track ID {track_id} is already selected for the pair link.")
+            return
+
+        if len(self.pair_track_ids) < 2:
+            self.pair_track_ids.append(track_id)
+        else:
+            self.pair_track_ids = [self.pair_track_ids[1], track_id]
+
+        if len(self.pair_track_ids) == 1:
+            print(f"Pair selection started with track ID: {track_id}")
+        else:
+            print(
+                f"Pair link tracks: {self.pair_track_ids[0]} and {self.pair_track_ids[1]}"
+            )
 
     def handle_key(self, key: int) -> bool:
         if key in SPACE_KEYS:
@@ -835,16 +1087,25 @@ class InteractivePlayer:
             print("Quitting interactive player.")
             return False
         if key_char in (ord("a"), ord("A")):
-            self.clear_selection()
+            self.reset_to_all_mode()
             return True
         if key_char in (ord("c"), ord("C")):
-            self.clear_selection()
+            self.clear_current_selection()
+            return True
+        if key_char in (ord("s"), ord("S")):
+            self.activate_special_mode(MODE_SPOTLIGHT)
+            return True
+        if key_char in (ord("p"), ord("P")):
+            self.activate_special_mode(MODE_PAIR)
             return True
         if key_char in (ord("j"), ord("J")):
             self.jump_to_frame()
             return True
         if key_char in (ord("e"), ord("E")):
             self.export_current_mode()
+            return True
+        if key in ESC_KEYS and self.mode in {MODE_SPOTLIGHT, MODE_PAIR}:
+            self.reset_to_all_mode()
             return True
 
         if self.paused and key in LEFT_ARROW_KEYS:
@@ -895,8 +1156,21 @@ class InteractivePlayer:
         self.next_frame_deadline = time.perf_counter() + self.frame_duration
 
     def export_current_mode(self) -> None:
-        export_selected_id = None if self.show_all_tracks else self.selected_track_id
-        if export_selected_id is None:
+        output_path: Path
+        export_selected_id = self.selected_track_id
+        export_pair_ids = list(self.pair_track_ids)
+
+        if self.mode == MODE_SPOTLIGHT and export_selected_id is None:
+            print("Spotlight mode needs a selected player before export.")
+            self.next_frame_deadline = time.perf_counter() + self.frame_duration
+            return
+
+        if self.mode == MODE_PAIR and len(export_pair_ids) < 2:
+            print("Pair-link mode needs two selected players before export.")
+            self.next_frame_deadline = time.perf_counter() + self.frame_duration
+            return
+
+        if self.mode == MODE_ALL:
             output_path = self.config.all_output_path
             print("Exporting all-player view from cached tracks.")
             success = export_video(
@@ -904,10 +1178,11 @@ class InteractivePlayer:
                 video_info=self.video_info,
                 frames_index=self.frames_index,
                 output_path=output_path,
+                mode=MODE_ALL,
                 selected_track_id=None,
-                show_all_tracks=True,
+                pair_track_ids=[],
             )
-        else:
+        elif self.mode == MODE_SINGLE and export_selected_id is not None:
             output_path = selected_output_path_for(self.config.video_path, export_selected_id)
             print(f"Exporting selected-player view for track {export_selected_id}.")
             success = export_video(
@@ -915,8 +1190,48 @@ class InteractivePlayer:
                 video_info=self.video_info,
                 frames_index=self.frames_index,
                 output_path=output_path,
+                mode=MODE_SINGLE,
                 selected_track_id=export_selected_id,
-                show_all_tracks=False,
+                pair_track_ids=[],
+            )
+        elif self.mode == MODE_SPOTLIGHT and export_selected_id is not None:
+            output_path = spotlight_output_path_for(self.config.video_path, export_selected_id)
+            print(f"Exporting spotlight view for track {export_selected_id}.")
+            success = export_video(
+                video_path=self.config.video_path,
+                video_info=self.video_info,
+                frames_index=self.frames_index,
+                output_path=output_path,
+                mode=MODE_SPOTLIGHT,
+                selected_track_id=export_selected_id,
+                pair_track_ids=[],
+            )
+        elif self.mode == MODE_PAIR and len(export_pair_ids) == 2:
+            output_path = pair_output_path_for(self.config.video_path, export_pair_ids)
+            print(
+                "Exporting pair-link view for tracks "
+                f"{export_pair_ids[0]} and {export_pair_ids[1]}."
+            )
+            success = export_video(
+                video_path=self.config.video_path,
+                video_info=self.video_info,
+                frames_index=self.frames_index,
+                output_path=output_path,
+                mode=MODE_PAIR,
+                selected_track_id=None,
+                pair_track_ids=export_pair_ids,
+            )
+        else:
+            output_path = self.config.all_output_path
+            print("Nothing is selected, so export fell back to the all-player view.")
+            success = export_video(
+                video_path=self.config.video_path,
+                video_info=self.video_info,
+                frames_index=self.frames_index,
+                output_path=output_path,
+                mode=MODE_ALL,
+                selected_track_id=None,
+                pair_track_ids=[],
             )
 
         if success:
