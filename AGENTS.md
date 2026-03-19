@@ -6,7 +6,7 @@ All implementation may use Cursor, Codex, or Antigravity.
 No generated output is considered complete until it is verified and documented.
 
 ## Required workflow
-1. Create or use a branch for every change. Do not work directly on main.
+1. Create a branch for every change and ask for from which branch should I make this change from. Do not work directly on main.
 2. Before coding, read this file and summarize the requested change.
 3. Make the smallest safe change possible.
 4. Before finishing, update docs/releases.md for shipped work.
