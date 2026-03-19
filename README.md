@@ -47,21 +47,25 @@ python3 main.py \
 5. The original video then starts playing in an OpenCV window at source FPS.
 6. Overlays are drawn live from the cached tracking metadata only.
 7. Clicking a player instantly switches the overlay mode to that `track_id` without rerunning tracking or re-rendering the video.
+8. Special overlay modes can swap the selected-player box for a spotlight or connect two selected players with a line.
 
 ## Interactive Controls
 
 - Left click: select the clicked player on the current frame
-- Right click: clear selection and return to all-player mode
+- Right click: clear the current selection; in spotlight or pair-link mode it stays in that mode
 - `Space`: pause or resume playback
 - Left arrow: step backward one frame when paused
 - Right arrow: step forward one frame when paused
 - `A`: force all-player mode
 - `C`: clear current selection
+- `S`: enter spotlight mode, then click one player to draw a triangular sky spotlight instead of a box
+- `P`: enter pair-link mode, then click two players to highlight them with yellow boxes, red ground rings, and a red connecting line
+- `Esc`: leave spotlight or pair-link mode and return to all-player mode
 - `J`: jump to a frame by entering the frame number in the terminal
 - `E`: export the current overlay mode to MP4
 - `Q`: quit
 
-If no player is selected, the player shows all tracked boxes. If a player is selected, only that player box remains visible from the next displayed frame onward.
+If no player is selected, the player shows all tracked boxes. In the default selection flow, clicking a player hides the rest and keeps only that player box visible. In spotlight mode, selecting a player hides the boxes and draws only a transparent triangular beam from the top of the frame to that player. In pair-link mode, Athleo keeps the other tracked boxes unchanged, highlights the two selected players with yellow boxes, places broadcast-style red ground rings at their feet, and connects those ground anchors with a strong red line.
 
 ## Outputs
 
@@ -70,6 +74,8 @@ Outputs are written beside the input video:
 - `<input_stem>.tracks.json`
 - `annotated_all.mp4`
 - `annotated_selected_<track_id>.mp4`
+- `annotated_spotlight_<track_id>.mp4`
+- `annotated_pair_<track_id_a>_<track_id_b>.mp4`
 
 Export always uses the original video plus cached tracking data. It does not rerun tracking.
 
