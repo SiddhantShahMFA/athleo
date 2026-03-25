@@ -49,6 +49,29 @@ FIREBALL_HOT_COLOR = (170, 245, 255)
 FIREBALL_WARM_COLOR = (60, 210, 255)
 FIREBALL_TRAIL_COLOR = (0, 150, 255)
 FIREBALL_OUTER_COLOR = (40, 90, 255)
+HUD_PANEL_BG_COLOR = (14, 20, 34)
+HUD_PANEL_ACCENT_COLOR = (0, 235, 255)
+HUD_PANEL_BORDER_COLOR = (92, 126, 188)
+HUD_HEADER_TEXT_COLOR = (245, 249, 255)
+HUD_BODY_TEXT_COLOR = (216, 226, 240)
+HUD_MUTED_TEXT_COLOR = (153, 170, 198)
+HUD_STATUS_TEXT_COLOR = (156, 236, 255)
+HUD_PANEL_ALPHA = 0.72
+HUD_PANEL_PADDING_X = 16
+HUD_PANEL_PADDING_Y = 14
+HUD_PANEL_MARGIN_TOP = 18
+HUD_PANEL_MARGIN_RIGHT = 18
+HUD_PANEL_ROW_GAP = 8
+HUD_PANEL_SECTION_GAP = 12
+HUD_PANEL_DIVIDER_GAP = 10
+HUD_PANEL_KEY_ACTION_GAP = 18
+HUD_PANEL_ACCENT_WIDTH = 6
+HUD_HEADER_FONT_SCALE = 0.68
+HUD_STATUS_FONT_SCALE = 0.5
+HUD_BODY_FONT_SCALE = 0.5
+HUD_KEY_FONT_SCALE = 0.5
+HUD_HEADER_THICKNESS = 2
+HUD_TEXT_THICKNESS = 1
 POSE_SKELETON_EDGES = (
     (15, 13),
     (13, 11),
@@ -76,6 +99,24 @@ ZOOM_SCALE_PADDING = 2.8
 ZOOM_MIN_WIDTH_RATIO = 0.18
 ZOOM_MIN_HEIGHT_RATIO = 0.34
 BALL_TRAIL_HISTORY = 10
+HUD_COMMANDS: tuple[tuple[str, str], ...] = (
+    ("Space", "Pause / Resume"),
+    ("Left / Right", "Step frame"),
+    ("Click", "Select player"),
+    ("Right click / C", "Clear selection"),
+    ("A", "Show all"),
+    ("S", "Spotlight"),
+    ("P", "Multi link"),
+    ("T", "Text labels"),
+    ("G", "Area"),
+    ("K", "Pose"),
+    ("Z", "Zoom"),
+    ("B", "Ball"),
+    ("J", "Jump to frame"),
+    ("E", "Export"),
+    ("Esc", "Exit special mode"),
+    ("Q", "Quit"),
+)
 
 
 @dataclass(frozen=True)
@@ -1750,76 +1791,253 @@ def overlay_player_status(
     selected_ball_track_id: int | None,
 ) -> np.ndarray:
     annotated = frame.copy()
+    font = cv2.FONT_HERSHEY_SIMPLEX
+
+    def text_size(
+        text: str,
+        font_scale: float,
+        thickness: int,
+    ) -> tuple[int, int, int]:
+        (width, height), baseline = cv2.getTextSize(text, font, font_scale, thickness)
+        return width, height, baseline
+
+    def compact_track_sequence(track_ids: list[int], max_visible: int = 3) -> str:
+        if not track_ids:
+            return ""
+        visible_ids = [str(track_id) for track_id in track_ids[:max_visible]]
+        if len(track_ids) > max_visible:
+            visible_ids.append(f"+{len(track_ids) - max_visible}")
+        return " -> ".join(visible_ids)
+
     if mode == MODE_SINGLE and selected_track_id is not None:
         mode_label = f"Track {selected_track_id}"
     elif mode == MODE_SPOTLIGHT:
         mode_label = (
-            f"Spotlight track {selected_track_id}"
+            f"Spotlight: #{selected_track_id}"
             if selected_track_id is not None
-            else "Spotlight mode (click a player)"
+            else "Spotlight: pick a player"
         )
     elif mode == MODE_PAIR:
         if len(multi_track_ids) >= 2:
-            mode_label = f"Multi link {' -> '.join(str(track_id) for track_id in multi_track_ids)}"
+            mode_label = f"Multi link: {compact_track_sequence(multi_track_ids)}"
         elif len(multi_track_ids) == 1:
-            mode_label = f"Multi link ({multi_track_ids[0]} selected, pick more)"
+            mode_label = f"Multi link: #{multi_track_ids[0]} selected"
         else:
-            mode_label = "Multi link mode (pick 2+ players)"
+            mode_label = "Multi link: pick 2+ players"
     elif mode == MODE_TEXT:
         if text_labels:
-            mode_label = f"Text labels {', '.join(str(track_id) for track_id in text_labels)}"
+            mode_label = (
+                f"Text labels: {compact_track_sequence(list(text_labels), max_visible=4)}"
+            )
         else:
-            mode_label = "Text mode (click a player to label)"
+            mode_label = "Text labels: pick a player"
     elif mode == MODE_AREA:
         if len(multi_track_ids) >= 3:
-            mode_label = f"Area {' -> '.join(str(track_id) for track_id in multi_track_ids)}"
+            mode_label = f"Area: {compact_track_sequence(multi_track_ids)}"
         elif multi_track_ids:
-            mode_label = f"Area mode ({len(multi_track_ids)} selected, pick more)"
+            mode_label = f"Area: {len(multi_track_ids)} selected"
         else:
-            mode_label = "Area mode (pick 3+ players)"
+            mode_label = "Area: pick 3+ players"
     elif mode == MODE_POSE:
         mode_label = (
-            f"Pose skeleton {selected_track_id}"
+            f"Pose: #{selected_track_id}"
             if selected_track_id is not None
-            else "Pose mode (click a player)"
+            else "Pose: pick a player"
         )
     elif mode == MODE_ZOOM:
         mode_label = (
-            f"Zoom follow {selected_track_id}"
+            f"Zoom: #{selected_track_id}"
             if selected_track_id is not None
-            else "Zoom mode (click a player)"
+            else "Zoom: pick a player"
         )
     elif mode == MODE_BALL:
         mode_label = (
-            f"Fireball {selected_ball_track_id}"
+            f"Ball: #{selected_ball_track_id}"
             if selected_ball_track_id is not None
-            else "Ball mode (click a ball)"
+            else "Ball: pick a ball"
         )
     else:
         mode_label = "All players"
 
     play_state = "Paused" if paused else "Playing"
-    lines = [
-        f"{play_state} | Frame {frame_idx + 1}/{frame_count}",
-        f"Mode: {mode_label}",
-        "Space pause/resume | Left/Right step when paused",
-        "Left click select | Right click/C clear | A all | Esc exit special mode",
-        "S spotlight | P multi link | T text | G area | K pose | Z zoom | B ball | J jump | E export | Q quit",
-    ]
+    header_text = "Controls"
+    status_line = f"{play_state} | Frame {frame_idx + 1}/{frame_count}"
+    mode_line = f"Mode | {mode_label}"
 
-    y = 28
-    for line in lines:
+    header_width, header_height, _header_baseline = text_size(
+        header_text,
+        HUD_HEADER_FONT_SCALE,
+        HUD_HEADER_THICKNESS,
+    )
+    status_width, status_height, _status_baseline = text_size(
+        status_line,
+        HUD_STATUS_FONT_SCALE,
+        HUD_TEXT_THICKNESS,
+    )
+    mode_width, mode_height, _mode_baseline = text_size(
+        mode_line,
+        HUD_BODY_FONT_SCALE,
+        HUD_TEXT_THICKNESS,
+    )
+
+    command_metrics: list[tuple[str, str, int, int, int, int]] = []
+    key_column_width = 0
+    command_row_height = 0
+    for key_text, action_text in HUD_COMMANDS:
+        key_width, key_height, key_baseline = text_size(
+            key_text,
+            HUD_KEY_FONT_SCALE,
+            HUD_HEADER_THICKNESS,
+        )
+        action_width, action_height, action_baseline = text_size(
+            action_text,
+            HUD_BODY_FONT_SCALE,
+            HUD_TEXT_THICKNESS,
+        )
+        command_metrics.append(
+            (
+                key_text,
+                action_text,
+                key_width,
+                key_height,
+                action_width,
+                max(key_baseline, action_baseline),
+            )
+        )
+        key_column_width = max(key_column_width, key_width)
+        command_row_height = max(command_row_height, key_height, action_height)
+
+    content_width = max(
+        header_width,
+        status_width,
+        mode_width,
+        max(
+            (
+                key_column_width + HUD_PANEL_KEY_ACTION_GAP + action_width
+                for _key_text, _action_text, _key_width, _key_height, action_width, _baseline in command_metrics
+            ),
+            default=0,
+        ),
+    )
+    panel_width = (
+        HUD_PANEL_ACCENT_WIDTH
+        + (HUD_PANEL_PADDING_X * 2)
+        + content_width
+    )
+    panel_height = (
+        (HUD_PANEL_PADDING_Y * 2)
+        + header_height
+        + HUD_PANEL_SECTION_GAP
+        + status_height
+        + HUD_PANEL_ROW_GAP
+        + mode_height
+        + HUD_PANEL_DIVIDER_GAP
+        + 1
+        + HUD_PANEL_DIVIDER_GAP
+        + (len(command_metrics) * command_row_height)
+        + (max(0, len(command_metrics) - 1) * HUD_PANEL_ROW_GAP)
+    )
+
+    frame_height, frame_width = annotated.shape[:2]
+    panel_x2 = min(frame_width - 1, frame_width - HUD_PANEL_MARGIN_RIGHT)
+    panel_x1 = max(0, panel_x2 - panel_width)
+    panel_y1 = min(max(0, HUD_PANEL_MARGIN_TOP), max(0, frame_height - panel_height - 1))
+    panel_y2 = min(frame_height - 1, panel_y1 + panel_height)
+
+    overlay = annotated.copy()
+    cv2.rectangle(overlay, (panel_x1, panel_y1), (panel_x2, panel_y2), HUD_PANEL_BG_COLOR, -1)
+    cv2.addWeighted(overlay, HUD_PANEL_ALPHA, annotated, 1.0 - HUD_PANEL_ALPHA, 0.0, annotated)
+    cv2.rectangle(
+        annotated,
+        (panel_x1, panel_y1),
+        (panel_x2, panel_y2),
+        HUD_PANEL_BORDER_COLOR,
+        2,
+    )
+    cv2.rectangle(
+        annotated,
+        (panel_x1, panel_y1),
+        (min(panel_x2, panel_x1 + HUD_PANEL_ACCENT_WIDTH), panel_y2),
+        HUD_PANEL_ACCENT_COLOR,
+        -1,
+    )
+
+    content_x = panel_x1 + HUD_PANEL_ACCENT_WIDTH + HUD_PANEL_PADDING_X
+    current_y = panel_y1 + HUD_PANEL_PADDING_Y
+
+    header_origin = (content_x, current_y + header_height)
+    cv2.putText(
+        annotated,
+        header_text,
+        header_origin,
+        font,
+        HUD_HEADER_FONT_SCALE,
+        HUD_HEADER_TEXT_COLOR,
+        HUD_HEADER_THICKNESS,
+        cv2.LINE_AA,
+    )
+    current_y += header_height + HUD_PANEL_SECTION_GAP
+
+    status_origin = (content_x, current_y + status_height)
+    cv2.putText(
+        annotated,
+        status_line,
+        status_origin,
+        font,
+        HUD_STATUS_FONT_SCALE,
+        HUD_STATUS_TEXT_COLOR,
+        HUD_TEXT_THICKNESS,
+        cv2.LINE_AA,
+    )
+    current_y += status_height + HUD_PANEL_ROW_GAP
+
+    mode_origin = (content_x, current_y + mode_height)
+    cv2.putText(
+        annotated,
+        mode_line,
+        mode_origin,
+        font,
+        HUD_BODY_FONT_SCALE,
+        HUD_BODY_TEXT_COLOR,
+        HUD_TEXT_THICKNESS,
+        cv2.LINE_AA,
+    )
+    current_y += mode_height + HUD_PANEL_DIVIDER_GAP
+
+    divider_y = current_y
+    cv2.line(
+        annotated,
+        (content_x, divider_y),
+        (panel_x2 - HUD_PANEL_PADDING_X, divider_y),
+        HUD_MUTED_TEXT_COLOR,
+        1,
+        cv2.LINE_AA,
+    )
+    current_y += HUD_PANEL_DIVIDER_GAP
+
+    for key_text, action_text, _key_width, key_height, _action_width, baseline in command_metrics:
+        row_baseline_y = current_y + max(command_row_height, key_height) - baseline
         cv2.putText(
             annotated,
-            line,
-            (18, y),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.62,
-            (255, 255, 255),
-            2,
+            key_text,
+            (content_x, row_baseline_y),
+            font,
+            HUD_KEY_FONT_SCALE,
+            HUD_PANEL_ACCENT_COLOR,
+            HUD_HEADER_THICKNESS,
             cv2.LINE_AA,
         )
-        y += 28
+        cv2.putText(
+            annotated,
+            action_text,
+            (content_x + key_column_width + HUD_PANEL_KEY_ACTION_GAP, row_baseline_y),
+            font,
+            HUD_BODY_FONT_SCALE,
+            HUD_BODY_TEXT_COLOR,
+            HUD_TEXT_THICKNESS,
+            cv2.LINE_AA,
+        )
+        current_y += command_row_height + HUD_PANEL_ROW_GAP
 
     return annotated
 

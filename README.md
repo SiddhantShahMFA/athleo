@@ -85,6 +85,8 @@ python3 main.py \
   --lost-buffer 10
 ```
 
+For a detailed end-to-end explanation of how the desktop player works for stakeholders, clients, and developers, see [docs/desktop-player-guide.md](/Users/siddhantshah/Desktop/Projects/athleo/docs/desktop-player-guide.md).
+
 ## Shared Processing Behavior
 
 For both the API and desktop flows:

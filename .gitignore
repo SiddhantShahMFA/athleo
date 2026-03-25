@@ -11,3 +11,5 @@ __pycache__
 .agents
 .codex
 .athleo_jobs
+.pyre_configuration
+docs/desktop-architecture.puml
